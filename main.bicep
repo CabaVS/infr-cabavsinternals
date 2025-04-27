@@ -104,6 +104,3 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
     }
   }
 }
-
-output storageAccountName string = storageAccount.name
-output containerAppUrl string = 'https://${containerApp.name}.${location}.azurecontainerapps.io'
