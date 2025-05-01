@@ -1,106 +1,152 @@
-var location = resourceGroup().location
+@description('Location for all resources')
+param location string = resourceGroup().location
 
-var storageAccountName = 'stcabavsinternals'
-var storageShareName = 'fs-jenkinshome'
-var acaEnvironmentName = 'cae-cabavsinternals'
-var containerAppName = 'aca-jenkins'
+@description('VM admin username')
+param adminUsername string = 'azureuser'
+@description('SSH Public Key for admin access')
+param adminSshPublicKey string
 
-resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
-  name: storageAccountName
+var vmName = 'vm-jenkins'
+var vnetName = 'vnet-jenkins'
+var subnetName = 'snet-jenkins'
+var nsgName = 'nsg-jenkins'
+var nicName = 'nic-jenkins'
+var publicIpName = 'pip-jenkins'
+var diskName = 'osdisk-jenkins'
+
+resource vnet 'Microsoft.Network/virtualNetworks@2023-04-01' = {
+  name: vnetName
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [
+        '10.0.0.0/16'
+      ]
+    }
+    subnets: [
+      {
+        name: subnetName
+        properties: {
+          addressPrefix: '10.0.1.0/24'
+          networkSecurityGroup: {
+            id: nsg.id
+          }
+        }
+      }
+    ]
+  }
+}
+
+resource nsg 'Microsoft.Network/networkSecurityGroups@2023-04-01' = {
+  name: nsgName
+  location: location
+  properties: {
+    securityRules: [
+      {
+        name: 'Allow-SSH'
+        properties: {
+          priority: 1000
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '22'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: '*'
+        }
+      }
+      {
+        name: 'Allow-Jenkins-UI'
+        properties: {
+          priority: 1010
+          direction: 'Inbound'
+          access: 'Allow'
+          protocol: 'Tcp'
+          sourcePortRange: '*'
+          destinationPortRange: '8080'
+          sourceAddressPrefix: '*'
+          destinationAddressPrefix: '*'
+        }
+      }
+    ]
+  }
+}
+
+resource publicIp 'Microsoft.Network/publicIPAddresses@2023-04-01' = {
+  name: publicIpName
   location: location
   sku: {
-    name: 'Standard_LRS'
+    name: 'Basic'
   }
-  kind: 'StorageV2'
   properties: {
-    allowBlobPublicAccess: false
-    minimumTlsVersion: 'TLS1_2'
-    supportsHttpsTrafficOnly: true
+    publicIPAllocationMethod: 'Dynamic'
   }
 }
 
-resource fileService 'Microsoft.Storage/storageAccounts/fileServices@2023-01-01' = {
-  parent: storageAccount
-  name: 'default'
-}
-
-resource storageShare 'Microsoft.Storage/storageAccounts/fileServices/shares@2023-01-01' = {
-  parent: fileService
-  name: storageShareName
-  properties: {
-    accessTier: 'TransactionOptimized'
-  }
-}
-
-resource acaEnv 'Microsoft.App/managedEnvironments@2023-11-02-preview' = {
-  name: acaEnvironmentName
+resource nic 'Microsoft.Network/networkInterfaces@2023-04-01' = {
+  name: nicName
   location: location
   properties: {
-    daprAIInstrumentationKey: ''
-  }
-}
-
-resource acaEnvStorage 'Microsoft.App/managedEnvironments/storages@2023-11-02-preview' = {
-  parent: acaEnv
-  name: 'default'
-  properties: {
-    azureFile: {
-      accountName: storageAccount.name
-      accountKey: storageAccount.listKeys().keys[0].value
-      shareName: storageShare.name
-      accessMode: 'ReadWrite'
-    }
-  }
-}
-
-resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
-  name: containerAppName
-  location: location
-  properties: {
-    managedEnvironmentId: acaEnv.id
-    configuration: {
-      ingress: {
-        external: true
-        targetPort: 8080
-        transport: 'auto'
-        allowInsecure: false
-        traffic: [
-          {
-            latestRevision: true
-            weight: 100
+    ipConfigurations: [
+      {
+        name: 'ipconfig1'
+        properties: {
+          subnet: {
+            id: vnet.properties.subnets[0].id
           }
-        ]
+          privateIPAllocationMethod: 'Dynamic'
+          publicIPAddress: {
+            id: publicIp.id
+          }
+        }
       }
-      activeRevisionsMode: 'Single'
+    ]
+  }
+}
+
+resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = {
+  name: vmName
+  location: location
+  properties: {
+    hardwareProfile: {
+      vmSize: 'Standard_B2s'
     }
-    template: {
-      containers: [
-        {
-          name: 'jenkins'
-          image: 'jenkins/jenkins:2.426.3-lts'
-          resources: {
-            cpu: 1
-            memory: '2Gi'
-          }
-          volumeMounts: [
+    osProfile: {
+      computerName: vmName
+      adminUsername: adminUsername
+      linuxConfiguration: {
+        disablePasswordAuthentication: true
+        ssh: {
+          publicKeys: [
             {
-              volumeName: storageShare.name
-              mountPath: '/var/jenkins_home'
+              path: '/home/${adminUsername}/.ssh/authorized_keys'
+              keyData: adminSshPublicKey
             }
           ]
         }
-      ]
-      volumes: [
+      }
+    }
+    storageProfile: {
+      imageReference: {
+        publisher: 'Canonical'
+        offer: '0001-com-ubuntu-server-jammy'
+        sku: '22_04-lts'
+        version: 'latest'
+      }
+      osDisk: {
+        name: diskName
+        createOption: 'FromImage'
+        managedDisk: {
+          storageAccountType: 'Premium_LRS'
+        }
+      }
+    }
+    networkProfile: {
+      networkInterfaces: [
         {
-          name: storageShare.name
-          storageType: 'AzureFile'
-          storageName: 'default'
+          id: nic.id
         }
       ]
-      scale: {
-        minReplicas: 1
-        maxReplicas: 1
-      }
     }
   }
 }
